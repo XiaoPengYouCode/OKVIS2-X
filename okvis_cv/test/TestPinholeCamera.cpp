@@ -29,6 +29,82 @@
 #include "okvis/cameras/EquidistantDistortion.hpp"
 #include <okvis/assert_macros.hpp>
 
+template<class Distortion>
+class PinholeCameraIntrinsics : public ::testing::Test {};
+
+typedef ::testing::Types<okvis::cameras::NoDistortion,
+                        okvis::cameras::RadialTangentialDistortion,
+                        okvis::cameras::EquidistantDistortion,
+                        okvis::cameras::RadialTangentialDistortion8> DistortionTypes;
+TYPED_TEST_SUITE(PinholeCameraIntrinsics, DistortionTypes);
+
+TYPED_TEST(PinholeCameraIntrinsics, acceptsValidLength)
+{
+  typedef okvis::cameras::PinholeCamera<TypeParam> Camera;
+  Camera camera = Camera::testObject();
+  Eigen::VectorXd intrinsics;
+  camera.getIntrinsics(intrinsics);
+  intrinsics.head<4>() << 420.0, 430.0, 310.0, 230.0;
+  intrinsics.tail(TypeParam::NumDistortionIntrinsics) *= 0.5;
+
+  ASSERT_TRUE(camera.setIntrinsics(intrinsics));
+  Eigen::VectorXd actual;
+  camera.getIntrinsics(actual);
+  EXPECT_TRUE(actual.isApprox(intrinsics));
+  EXPECT_DOUBLE_EQ(camera.focalLengthU(), intrinsics[0]);
+  EXPECT_DOUBLE_EQ(camera.focalLengthV(), intrinsics[1]);
+  EXPECT_DOUBLE_EQ(camera.imageCenterU(), intrinsics[2]);
+  EXPECT_DOUBLE_EQ(camera.imageCenterV(), intrinsics[3]);
+
+  TypeParam distortion = TypeParam::testObject();
+  ASSERT_TRUE(distortion.setParameters(
+      intrinsics.tail(TypeParam::NumDistortionIntrinsics)));
+  const Camera expected(camera.imageWidth(), camera.imageHeight(),
+                        intrinsics[0], intrinsics[1], intrinsics[2], intrinsics[3],
+                        distortion);
+  const Eigen::Vector3d point(0.1, -0.08, 1.0);
+  Eigen::Vector2d projected, expectedProjection;
+  ASSERT_EQ(camera.project(point, &projected),
+            okvis::cameras::ProjectionStatus::Successful);
+  ASSERT_EQ(expected.project(point, &expectedProjection),
+            okvis::cameras::ProjectionStatus::Successful);
+  EXPECT_TRUE(projected.isApprox(expectedProjection));
+
+  Eigen::Vector3d ray, expectedRay;
+  ASSERT_TRUE(camera.backProject(expectedProjection, &ray));
+  ASSERT_TRUE(expected.backProject(expectedProjection, &expectedRay));
+  EXPECT_TRUE(ray.isApprox(expectedRay));
+}
+
+TYPED_TEST(PinholeCameraIntrinsics, rejectsInvalidLengthsWithoutUpdating)
+{
+  typedef okvis::cameras::PinholeCamera<TypeParam> Camera;
+  Camera camera = Camera::testObject();
+  Eigen::VectorXd before;
+  camera.getIntrinsics(before);
+  const Eigen::Vector3d point(0.1, -0.08, 1.0);
+  Eigen::Vector2d projectionBefore;
+  ASSERT_EQ(camera.project(point, &projectionBefore),
+            okvis::cameras::ProjectionStatus::Successful);
+  Eigen::Vector3d rayBefore;
+  ASSERT_TRUE(camera.backProject(projectionBefore, &rayBefore));
+
+  for (const int length : {0, 1, Camera::NumIntrinsics - 1, Camera::NumIntrinsics + 1}) {
+    SCOPED_TRACE(length);
+    EXPECT_FALSE(camera.setIntrinsics(Eigen::VectorXd::Constant(length, 123.0)));
+    Eigen::VectorXd after;
+    camera.getIntrinsics(after);
+    EXPECT_TRUE(after.isApprox(before));
+    Eigen::Vector2d projectionAfter;
+    ASSERT_EQ(camera.project(point, &projectionAfter),
+              okvis::cameras::ProjectionStatus::Successful);
+    EXPECT_TRUE(projectionAfter.isApprox(projectionBefore));
+    Eigen::Vector3d rayAfter;
+    ASSERT_TRUE(camera.backProject(projectionBefore, &rayAfter));
+    EXPECT_TRUE(rayAfter.isApprox(rayBefore));
+  }
+}
+
 TEST(PinholeCamera, project)
 {
   const size_t NUM_POINTS = 100;
